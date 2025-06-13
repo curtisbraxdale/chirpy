@@ -39,6 +39,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 
 	server := http.Server{}
 	server.Handler = serveMux
@@ -208,4 +209,21 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, req *http.Request)
 		chirps = append(chirps, Chirp{ID: c.ID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Body: c.Body, UserID: c.UserID})
 	}
 	respondWithJSON(w, 200, chirps)
+}
+
+func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, req *http.Request) {
+	chirpID, err := uuid.Parse(req.PathValue("chirpID"))
+	if err != nil {
+		log.Printf("Error parsing uuid: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	dbChirp, err := cfg.queries.GetChirp(context.Background(), chirpID)
+	if err != nil {
+		log.Printf("Chirp not found: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+	chirp := Chirp{ID: dbChirp.ID, CreatedAt: dbChirp.CreatedAt, UpdatedAt: dbChirp.UpdatedAt, Body: dbChirp.Body, UserID: dbChirp.UserID}
+	respondWithJSON(w, 200, chirp)
 }
