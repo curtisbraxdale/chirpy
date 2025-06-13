@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/curtisbraxdale/chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -18,6 +21,7 @@ import (
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Printf("Error connecting to database: %s", err)
@@ -25,7 +29,7 @@ func main() {
 	dbQueries := database.New(db)
 
 	serveMux := http.NewServeMux()
-	apiCfg := apiConfig{queries: dbQueries}
+	apiCfg := apiConfig{queries: dbQueries, platform: platform}
 	fileHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
 
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(fileHandler))
@@ -33,6 +37,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/validate_chirp", validateHandler)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
+	serveMux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
 
 	server := http.Server{}
 	server.Handler = serveMux
@@ -81,15 +86,26 @@ func (apiCfg *apiConfig) hitsHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (apiCfg *apiConfig) resetHandler(w http.ResponseWriter, req *http.Request) {
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-	w.Write([]byte("Hits Reset."))
-	apiCfg.fileserverHits.Store(0)
+	if apiCfg.platform != "dev" {
+		w.WriteHeader(403)
+	} else {
+		apiCfg.fileserverHits.Store(0)
+		err := apiCfg.queries.DeleteUsers(context.Background())
+		if err != nil {
+			log.Printf("Error deleting users: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(200)
+		w.Write([]byte("Deleted Users & Hits Reset."))
+	}
 }
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	queries        *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -136,4 +152,40 @@ func cleanChirp(body string) string {
 	}
 	cleanedBody := strings.Join(splitWords, " ")
 	return cleanedBody
+}
+
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	dbUser, err := cfg.queries.CreateUser(context.Background(), params.Email)
+	if err != nil {
+		log.Printf("Error creating user: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	newUser := User{ID: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt, Email: dbUser.Email}
+	respondWithJSON(w, 201, newUser)
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, req *http.Request) {
+	type params struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
 }
