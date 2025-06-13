@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/curtisbraxdale/chirpy/internal/auth"
 	"github.com/curtisbraxdale/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -40,6 +41,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
+	serveMux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 
 	server := http.Server{}
 	server.Handler = serveMux
@@ -132,7 +134,8 @@ func cleanChirp(body string) string {
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	decoder := json.NewDecoder(req.Body)
 	params := parameters{}
@@ -142,7 +145,14 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request
 		w.WriteHeader(500)
 		return
 	}
-	dbUser, err := cfg.queries.CreateUser(context.Background(), params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	dbUserParams := database.CreateUserParams{Email: params.Email, HashedPassword: hashedPassword}
+	dbUser, err := cfg.queries.CreateUser(context.Background(), dbUserParams)
 	if err != nil {
 		log.Printf("Error creating user: %s", err)
 		w.WriteHeader(500)
@@ -226,4 +236,33 @@ func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, req *http.Request) 
 	}
 	chirp := Chirp{ID: dbChirp.ID, CreatedAt: dbChirp.CreatedAt, UpdatedAt: dbChirp.UpdatedAt, Body: dbChirp.Body, UserID: dbChirp.UserID}
 	respondWithJSON(w, 200, chirp)
+}
+
+func (cfg *apiConfig) loginHandler(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	dbUser, err := cfg.queries.GetUserByEmail(context.Background(), params.Email)
+	if err != nil {
+		log.Print("Incorrect email or password")
+		w.WriteHeader(401)
+		return
+	}
+	err = auth.CheckPasswordHash(dbUser.HashedPassword, params.Password)
+	if err != nil {
+		log.Print("Incorrect email or password")
+		w.WriteHeader(401)
+		return
+	}
+	user := User{ID: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt, Email: dbUser.Email}
+	respondWithJSON(w, 200, user)
 }
