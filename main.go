@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -233,13 +234,8 @@ type Chirp struct {
 
 func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, req *http.Request) {
 	userIDString := req.URL.Query().Get("author_id")
-	userID, err := uuid.Parse(userIDString)
-	if err != nil {
-		log.Printf("Error parsing UUID: %s", err)
-		w.WriteHeader(500)
-		return
-	}
 	dbChirps := []database.Chirp{}
+	var err error = nil
 	if userIDString == "" {
 		dbChirps, err = cfg.queries.GetChirps(context.Background())
 		if err != nil {
@@ -248,6 +244,12 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, req *http.Request)
 			return
 		}
 	} else {
+		userID, err := uuid.Parse(userIDString)
+		if err != nil {
+			log.Printf("Error parsing UUID: %s", err)
+			w.WriteHeader(500)
+			return
+		}
 		dbChirps, err = cfg.queries.GetChirpsByUser(context.Background(), userID)
 		if err != nil {
 			log.Printf("Error getting chirps: %s", err)
@@ -259,6 +261,10 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, req *http.Request)
 	chirps := []Chirp{}
 	for _, c := range dbChirps {
 		chirps = append(chirps, Chirp{ID: c.ID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Body: c.Body, UserID: c.UserID})
+	}
+	sortDir := req.URL.Query().Get("sort")
+	if sortDir == "desc" {
+		sort.Slice(chirps, func(i, j int) bool { return chirps[j].CreatedAt.Before(chirps[i].CreatedAt) })
 	}
 	respondWithJSON(w, 200, chirps)
 }
