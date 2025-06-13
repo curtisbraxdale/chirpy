@@ -34,10 +34,11 @@ func main() {
 
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(fileHandler))
 	serveMux.HandleFunc("GET /api/healthz", readiHandler)
-	serveMux.HandleFunc("POST /api/validate_chirp", validateHandler)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
+	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
+	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 
 	server := http.Server{}
 	server.Handler = serveMux
@@ -50,32 +51,6 @@ func readiHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
-}
-
-func validateHandler(w http.ResponseWriter, req *http.Request) {
-	type parameters struct {
-		Body string `json:"body"`
-	}
-	type cleanedValues struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	decoder := json.NewDecoder(req.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(500)
-		return
-	}
-
-	if len(params.Body) > 140 {
-		respondWithError(w, 400, "Chirp is too long")
-	} else {
-		cleanedBody := cleanChirp(params.Body)
-		respBody := cleanedValues{CleanedBody: cleanedBody}
-		respondWithJSON(w, 200, respBody)
-	}
 }
 
 func (apiCfg *apiConfig) hitsHandler(w http.ResponseWriter, req *http.Request) {
@@ -184,8 +159,53 @@ type User struct {
 }
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, req *http.Request) {
-	type params struct {
+	type parameters struct {
 		Body   string    `json:"body"`
 		UserID uuid.UUID `json:"user_id"`
 	}
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	// Validate & Censor Chirp
+	if len(params.Body) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+	} else {
+		cleanedBody := cleanChirp(params.Body)
+		chirpParams := database.CreateChirpParams{Body: cleanedBody, UserID: params.UserID}
+		dbChirp, err := cfg.queries.CreateChirp(context.Background(), chirpParams)
+		if err != nil {
+			log.Printf("Error creating user: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+		newChirp := Chirp{ID: dbChirp.ID, CreatedAt: dbChirp.CreatedAt, UpdatedAt: dbChirp.UpdatedAt, Body: dbChirp.Body, UserID: dbChirp.UserID}
+		respondWithJSON(w, 201, newChirp)
+	}
+}
+
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, req *http.Request) {
+	dbChirps, err := cfg.queries.GetChirps(context.Background())
+	if err != nil {
+		log.Printf("Error getting chirps: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	chirps := []Chirp{}
+	for _, c := range dbChirps {
+		chirps = append(chirps, Chirp{ID: c.ID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Body: c.Body, UserID: c.UserID})
+	}
+	respondWithJSON(w, 200, chirps)
 }
